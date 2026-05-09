@@ -1,126 +1,123 @@
-import json
-import numpy as np
-# import joblib  # Pour charger ton modèle et ton scaler
-
-# Variable globale pour calculer le Delta_V
-tension_precedente_adaptee = 24.0 
-
-def adapter_donnees_pour_svm(payload_mqtt_brut):
-    global tension_precedente_adaptee
-    
-    # 1. Extraction des données de l'ESP32
-    data = json.loads(payload_mqtt_brut)
-    tension_raw = data["tension"]
-    courant_raw = data["courant"]
-    
-    # 2. Mise à l'échelle (Mapping vers le domaine d'entraînement 24V/2A)
-    # Ces coefficients transforment tes lectures 7V en équivalent 24V
-    coef_tension = 24.0 / 6.94
-    coef_courant = 2.15 / 0.23
-    
-    voltage_v = tension_raw * coef_tension
-    # Éviter d'amplifier le bruit si le courant est à 0
-    current_a = courant_raw * coef_courant if courant_raw > 0 else 0.0
-    
-    # 3. Création des variables (Features) manquantes
-    power_w = voltage_v * current_a
-    delta_v = voltage_v - tension_precedente_adaptee
-    temperature_c = 36.0  # Valeur nominale fixe simulée
-    
-    # Mise à jour pour la prochaine itération
-    tension_precedente_adaptee = voltage_v
-    
-    # 4. Construction du vecteur dans l'ordre EXACT du CSV
-    # [Current_A, Voltage_V, Temperature_C, Power_W, Delta_V]
-    vecteur_features = np.array([[current_a, voltage_v, temperature_c, power_w, delta_v]])
-    
-    return vecteur_features, voltage_v, current_a, power_w, delta_v, temperature_c
-
-# --- Exemple d'utilisation à l'arrivée d'un message MQTT ---
-message_mqtt = '{"tension": 6.72, "courant": 0.232}'
-
-# 1. Extraction des données brutes pour l'affichage
-data = json.loads(message_mqtt)
-tension_raw = data["tension"]
-courant_raw = data["courant"]
-
-# 2. On adapte les données
-X_new, voltage_v, current_a, power_w, delta_v, temperature_c = adapter_donnees_pour_svm(message_mqtt)
-
-# 2. Normalisation (TRÈS IMPORTANT)
-# Tu dois utiliser l'objet StandardScaler ou MinMaxScaler que tu as 
-# ajusté (fit) pendant l'entraînement de ton modèle SVM.
-# X_new_scaled = mon_scaler.transform(X_new)
-
-# 3. Prédiction
-# prediction = mon_modele_svm.predict(X_new_scaled)
-# print("Prédiction de panne :", prediction[0])
-# À l'intérieur de ton callback MQTT (on_message)
-print("-" * 30)
-print(f"📥 RECU (ESP32)  : Tension: {tension_raw}V, Courant: {courant_raw}A")
-
-# Après avoir appliqué les coefficients de ma réponse précédente
-print(f"🔄 ADAPTÉ (SVM) : Voltage: {voltage_v:.2f}V, Current: {current_a:.2f}A")
-print(f"📊 FEATURES     : Power: {power_w:.2f}W, Delta_V: {delta_v:.2f}, Temp: {temperature_c}°C")
-print("-" * 30)
 import paho.mqtt.client as mqtt
 import json
 import time
+import joblib
+import numpy as np
+from datetime import datetime
 
-# Variables pour le calcul du Delta_V
-last_voltage_adapted = 24.0
+# ─────────────────────────────────────────────
+# CONFIGURATION
+# ─────────────────────────────────────────────
+BROKER         = "192.168.137.39"    # IP de la Raspberry Pi (interface wlan0)
+PORT           = 1883
+TOPIC_RAW      = "sensor/M1/raw"     # topic reçu depuis l'ESP32
+TOPIC_PROCESSED = "motor/M1/data"    # ✅ topic que le dashboard écoute (motor/+/data)
 
+# Chargement du modèle SVM et du scaler (décommenter quand tu as les fichiers)
+# svm_model = joblib.load("svm_model.pkl")
+# scaler    = joblib.load("scaler.pkl")
+
+# ─────────────────────────────────────────────
+# ÉTAT GLOBAL
+# ─────────────────────────────────────────────
+last_voltage_adapted = 24.0   # Pour calculer Delta_V
+
+# ─────────────────────────────────────────────
+# CALLBACKS MQTT
+# ─────────────────────────────────────────────
 def on_connect(client, userdata, flags, rc):
-    print("✅ Connecté au Broker MQTT")
-    client.subscribe("sensor/M1/raw")
+    if rc == 0:
+        print("✅ Connecté au Broker MQTT (localhost)")
+        client.subscribe(TOPIC_RAW)
+        print(f"📡 Abonné au topic : {TOPIC_RAW}")
+    else:
+        print(f"❌ Connexion échouée, code : {rc}")
+
 
 def on_message(client, userdata, msg):
+    """
+    BUG CORRIGÉ : toute la logique (calcul + publish) est DANS on_message.
+    Avant : le publish était APRÈS loop_forever() → jamais exécuté.
+    """
     global last_voltage_adapted
-    try:
-        # 1. Décoder le JSON reçu de l'ESP32
-        data = json.loads(msg.payload.decode())
-        tension_raw = data.get("tension", 0)
-        courant_raw = data.get("courant", 0)
 
-        # 2. Transformation (Adaptation au modèle SVM 24V/2A)
-        # Coéfficients basés sur tes captures d'écran
-        voltage_v = tension_raw * (24.0 / 6.94)
-        current_a = courant_raw * (2.15 / 0.23) if courant_raw > 0 else 0.0
-        
-        # 3. Calcul des Features manquantes
-        power_w = voltage_v * current_a
-        delta_v = voltage_v - last_voltage_adapted
-        temperature_c = 36.0  # Valeur fixe pour stabiliser le SVM
-        
-        # Mise à jour de la tension pour le prochain calcul de Delta_V
+    try:
+        # ── 1. Lire le JSON de l'ESP32 (déjà en vraies valeurs) ──────────
+        data      = json.loads(msg.payload.decode())
+        voltage_v = data.get("tension", 0)      # Déjà en volts (ex: 24.5)
+        current_a = data.get("courant", 0)      # Déjà en ampères (ex: 2.1)
+
+
+        # ── 2. Les valeurs sont déjà en vraies unités, pas de conversion ──
+        # L'ESP32 a déjà fait la conversion avec ses diviseurs
+        if current_a < 0.20:
+            current_a = 0.0
+
+        # ── 3. Calculer les features manquantes ───────────────────────────
+        power_w      = voltage_v * current_a
+        delta_v      = voltage_v - last_voltage_adapted
+        temperature_c = 36.0   # fixe (pas de capteur de température branché)
+
+        # Mise à jour pour la prochaine itération
         last_voltage_adapted = voltage_v
 
-        # 4. Affichage TOUTES LES VALEURS (Une ligne par seconde)
-        # Le formatage .2f permet de limiter à 2 décimales pour la lisibilité
-        timestamp = time.strftime("%H:%M:%S")
-        print(f"[{timestamp}] V_adapt: {voltage_v:>5.2f}V | I_adapt: {current_a:>5.2f}A | P: {power_w:>5.2f}W | ΔV: {delta_v:>6.2f} | Temp: {temperature_c}°C")
+        # ── 4. Détection d'anomalie : courant nul = fault_label 1 ─────────
+        if current_a == 0.0:
+            fault_label = 1
+            anomaly_score = 1
+        else:
+            fault_label = 0
+            anomaly_score = 0
+
+        # (Si tu veux utiliser le modèle SVM plus tard, insère la logique ici)
+        # vecteur = np.array([[current_a, voltage_v, temperature_c, power_w, delta_v]])
+        # vecteur_scaled = scaler.transform(vecteur)
+        # prediction     = svm_model.predict(vecteur_scaled)
+        # fault_label    = int(prediction[0])
+        # anomaly_score  = fault_label
+
+        # ── 5. Construire le JSON complet avec les clés attendues par le dashboard
+        #       BUG CORRIGÉ : les clés correspondent exactement à ce que
+        #       dashboard_pfe.py lit (voltage, current, power, temp, anomaly_score)
+        timestamp = datetime.now().strftime("%H:%M:%S")
+        data_processed = {
+            "timestamp"    : timestamp,
+            "voltage"      : round(voltage_v, 2),    # ✅ clé correcte
+            "current"      : round(current_a, 2),    # ✅ clé correcte
+            "power"        : round(power_w, 2),      # ✅ clé correcte
+            "temp"         : round(temperature_c, 1),# ✅ clé correcte
+            "delta_v"      : round(delta_v, 3),
+            "fault_label"  : fault_label,
+            "anomaly_score": anomaly_score,
+        }
+
+        # ── 6. Publier sur le topic que le dashboard écoute ───────────────
+        #       BUG CORRIGÉ : topic = "motor/M1/data" (au lieu de "sensor/M1/processed")
+        client.publish(TOPIC_PROCESSED, json.dumps(data_processed))
+
+        # ── 7. Log console ────────────────────────────────────────────────
+        status = "⚠️ ANOMALIE" if fault_label != 0 else "✅ NORMAL"
+        print(
+            f"[{timestamp}] "
+            f"V: {voltage_v:>6.2f}V | I: {current_a:>5.2f}A | "
+            f"P: {power_w:>6.2f}W | ΔV: {delta_v:>6.3f} | "
+            f"T: {temperature_c}°C | {status}"
+        )
 
     except Exception as e:
-        print(f"❌ Erreur : {e}")
+        print(f"❌ Erreur dans on_message : {e}")
 
-# Configuration du client MQTT
+
+# ─────────────────────────────────────────────
+# LANCEMENT DU CLIENT MQTT
+# ─────────────────────────────────────────────
 client = mqtt.Client()
 client.on_connect = on_connect
 client.on_message = on_message
 
-client.connect("localhost", 1883, 60)
+print(f"🔌 Connexion à {BROKER}:{PORT} ...")
+client.connect(BROKER, PORT, 60)
 
-# Lancer la boucle infinie pour voir les valeurs défiler
+# loop_forever() est EN DERNIER → il bloque et appelle on_message à chaque message
+# BUG CORRIGÉ : le publish est DANS on_message, pas après loop_forever()
 client.loop_forever()
-# Dans ton script test_val_mqtt.py, à la fin de la fonction on_message :
-
-# 1. On crée un nouveau dictionnaire avec les valeurs adaptées
-data_traitee = {
-    "tension": round(voltage_v, 2),
-    "courant": round(current_a, 2),
-    "puissance": round(power_w, 2),
-    "temperature": temperature_c
-}
-
-# 2. On envoie ce JSON sur un nouveau topic
-client.publish("sensor/M1/processed", json.dumps(data_traitee))
