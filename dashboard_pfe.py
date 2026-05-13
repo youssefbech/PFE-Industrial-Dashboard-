@@ -33,8 +33,9 @@ if 'motors_data' not in st.session_state:
 # ─────────────────────────────────────────────
 def on_message(client, userdata, msg):
     try:
-        topic_parts = msg.topic.split('/')
-        motor_id    = topic_parts[1].upper()   # ex : "M1"
+        if msg.topic != "sensors/motor/test":
+            return
+        motor_id = "M1"
         payload     = json.loads(msg.payload.decode('utf-8'))
         payload['motor_id'] = motor_id
         userdata.put(payload)
@@ -52,9 +53,8 @@ def init_mqtt():
     # Avant : connexion à mqtt.flespi.io (cloud) → jamais relié à localhost
     client.connect("192.168.137.39", 1883, 60)
 
-    # ✅ BUG CORRIGÉ : écoute "motor/+/data" → correspond à "motor/M1/data"
-    # que test_val_mqtt.py publie maintenant
-    client.subscribe("motor/+/data")
+    # ✅ Écoute uniquement le topic brut de l’inférence IA
+    client.subscribe("sensors/motor/test")
     client.loop_start()
     return client, q
 

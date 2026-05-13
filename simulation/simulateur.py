@@ -7,7 +7,7 @@ import json
 # ⚠️ TRÈS IMPORTANT : Ce fichier DOIT contenir tes valeurs physiques brutes (ex: Tension=220V), 
 # et surtout PAS les valeurs standardisées.
 BASE_DIR = os.path.dirname(os.path.abspath(__file__))
-csv_file = os.path.join(BASE_DIR, 'validation_data.csv')
+csv_file = os.path.join(BASE_DIR, 'bldc_predictive_maintenance_dataset (1) (1) (1).csv')
 
 try:
     df = pd.read_csv(csv_file)
@@ -35,4 +35,4 @@ for index, row in df.iterrows():
     client.publish("sensor/M1/raw", json.dumps(data))
     print(f"📡 Envoi Brut -> V: {data['Voltage_V']}V | A: {data['Current_A']}A")
     
-    time.sleep(1) 
+    time.sleep(0.3) 

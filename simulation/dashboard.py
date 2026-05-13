@@ -37,10 +37,10 @@ FAULT_TYPES = {
 # 2. RECEPTION MQTT
 def on_message(client, userdata, msg):
     try:
-        topic_parts = msg.topic.split('/')
-        motor_id = topic_parts[1].upper()
+        if msg.topic != "sensors/motor/test":
+            return
         payload = json.loads(msg.payload.decode('utf-8'))
-        payload['motor_id'] = motor_id
+        payload['motor_id'] = "M1"
         userdata.put(payload)
     except Exception as e:
         print(f"❌ Erreur dashboard on_message : {e}")
@@ -51,7 +51,7 @@ def init_mqtt():
     client = mqtt.Client(mqtt.CallbackAPIVersion.VERSION2, userdata=q)
     client.on_message = on_message
     client.connect("localhost", 1883, 60)
-    client.subscribe("motor/+/data")
+    client.subscribe("sensors/motor/test")
     client.loop_start()
     return client, q
 

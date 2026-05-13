@@ -11,7 +11,7 @@ from datetime import datetime
 BROKER         = "192.168.137.39"    # IP de la Raspberry Pi (interface wlan0)
 PORT           = 1883
 TOPIC_RAW      = "sensor/M1/raw"     # topic reçu depuis l'ESP32
-TOPIC_PROCESSED = "motor/M1/data"    # ✅ topic que le dashboard écoute (motor/+/data)
+TOPIC_PROCESSED = "sensors/motor/test"    # ✅ topic de publication
 
 # Chargement du modèle SVM et du scaler (décommenter quand tu as les fichiers)
 # svm_model = joblib.load("svm_model.pkl")

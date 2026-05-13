@@ -99,8 +99,8 @@ def on_message(client, userdata, msg):
         "anomaly_score": int(prediction)
     }
     
-    # ⚠️ PUBLICATION SUR FLESPI SUR LE BON TOPIC
-    client_pub.publish("sensors/motor/data", json.dumps(payload))
+    # PUBLICATION SUR LE BROKER LOCAL SUR LE TOPIC sensors/motor/test
+    client_local.publish("sensors/motor/test", json.dumps(payload))
     
     # Sauvegarde dans un fichier pour le Dashboard Streamlit
     save_motor_data("M1", payload)
